@@ -24,6 +24,7 @@ import { PRTopbarButton } from "@/components/github/pr-topbar-button";
 import { JiraTicketButton, extractJiraKey } from "@/components/jira/jira-ticket-button";
 import { JiraLinkButton } from "@/components/jira/jira-link-button";
 import { PortForwardButton } from "@/components/task/port-forward-dialog";
+import { ExecutorSettingsButton } from "@/components/task/executor-settings-button";
 import { WorkflowStepper, type WorkflowStepperStep } from "@/components/task/workflow-stepper";
 import { RemoteCloudTooltip } from "@/components/task/remote-cloud-tooltip";
 import { QuickChatButton } from "@/components/task/quick-chat-button";
@@ -343,6 +344,7 @@ function TopBarRight({
       <DocumentControls activeSessionId={activeSessionId ?? null} />
       {!isArchived && (
         <>
+          <ExecutorSettingsButton taskId={taskId} />
           <PortForwardButton
             isRemoteExecutor={isRemoteExecutor}
             sessionId={activeSessionId}
