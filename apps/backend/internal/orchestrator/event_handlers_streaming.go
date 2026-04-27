@@ -542,6 +542,21 @@ func (s *Service) handleCompleteStreamEvent(ctx context.Context, payload *lifecy
 		}
 	}
 
+	// Sweep any stranded pending permission_request messages. The adapter
+	// guard catches the common case (permission arrives after the tool
+	// already terminated) but cannot help if the message was already created
+	// in the DB before that signal was available — e.g. agentctl restarted
+	// mid-turn, or an event-ordering race let the message land before its
+	// cancellation. Without this sweep the UI keeps a "pending approval"
+	// indicator forever for a turn that has already finished.
+	if s.messageCreator != nil && payload.SessionID != "" {
+		if _, err := s.messageCreator.ExpirePendingPermissionsForSession(ctx, payload.SessionID); err != nil {
+			s.logger.Error("failed to expire pending permissions on turn complete",
+				zap.String("session_id", payload.SessionID),
+				zap.Error(err))
+		}
+	}
+
 	// READY events own workflow transitions and queued prompt execution.
 	// If we're still RUNNING here, avoid racing READY by forcing WAITING/REVIEW.
 	if session != nil && session.State == models.TaskSessionStateRunning {
@@ -780,7 +795,10 @@ func (s *Service) handlePermissionCancelledEvent(ctx context.Context, payload *l
 		return
 	}
 	if err := s.messageCreator.UpdatePermissionMessage(ctx, sessionID, payload.Data.PendingID, "expired"); err != nil {
-		s.logger.Warn("failed to mark permission as expired",
+		// Log as Error: a swallowed update here leaves the UI showing a
+		// permission that the agent has already cancelled, which is one of
+		// the stuck-pending paths we are trying to surface.
+		s.logger.Error("failed to mark permission as expired",
 			zap.String("session_id", sessionID),
 			zap.String("pending_id", payload.Data.PendingID),
 			zap.Error(err))

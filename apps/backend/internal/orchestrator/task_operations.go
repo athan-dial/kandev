@@ -1740,10 +1740,13 @@ func (s *Service) RespondToPermission(ctx context.Context, sessionID, pendingID,
 
 	// Respond to the permission via agentctl
 	if err := s.executor.RespondToPermission(ctx, sessionID, pendingID, optionID, cancelled); err != nil {
-		// Permission likely expired — update message so frontend reflects this
+		// Permission likely expired — update message so frontend reflects this.
+		// Log as Error: a silent failure here leaves the UI showing "pending"
+		// after the user has actually responded, which is exactly the stuck
+		// state we are trying to make impossible.
 		if s.messageCreator != nil {
 			if updateErr := s.messageCreator.UpdatePermissionMessage(ctx, sessionID, pendingID, "expired"); updateErr != nil {
-				s.logger.Warn("failed to mark expired permission message",
+				s.logger.Error("failed to mark expired permission message",
 					zap.String("session_id", sessionID),
 					zap.String("pending_id", pendingID),
 					zap.Error(updateErr))
@@ -1761,7 +1764,10 @@ func (s *Service) RespondToPermission(ctx context.Context, sessionID, pendingID,
 	// Update the permission message with the new status
 	if s.messageCreator != nil {
 		if err := s.messageCreator.UpdatePermissionMessage(ctx, sessionID, pendingID, status); err != nil {
-			s.logger.Warn("failed to update permission message status",
+			// Log as Error: see comment above — a swallowed Warn here is the
+			// signal that the UI is stuck on a permission the user already
+			// answered.
+			s.logger.Error("failed to update permission message status",
 				zap.String("session_id", sessionID),
 				zap.String("pending_id", pendingID),
 				zap.String("status", status),
