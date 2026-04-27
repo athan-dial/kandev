@@ -569,6 +569,58 @@ func (s *Service) UpdatePermissionMessage(ctx context.Context, sessionID, pendin
 	return nil
 }
 
+// ExpirePendingPermissionsForSession marks every still-pending permission_request
+// message for the session as expired and publishes message.updated for each.
+// Used by the orchestrator's turn-complete sweep so a permission request that
+// was stranded (e.g. agent emitted session/request_permission after its turn
+// already finished) does not stay pending forever in the UI.
+//
+// Returns the number of messages expired.
+func (s *Service) ExpirePendingPermissionsForSession(ctx context.Context, sessionID string) (int, error) {
+	pending, err := s.messages.ListPendingPermissionRequestsBySession(ctx, sessionID)
+	if err != nil {
+		return 0, err
+	}
+	if len(pending) == 0 {
+		return 0, nil
+	}
+
+	expired := 0
+	for _, msg := range pending {
+		if msg.Metadata == nil {
+			msg.Metadata = make(map[string]interface{})
+		}
+		msg.Metadata["status"] = "expired"
+		if err := s.messages.UpdateMessage(ctx, msg); err != nil {
+			s.logger.Error("failed to expire pending permission message",
+				zap.String("message_id", msg.ID),
+				zap.String("session_id", sessionID),
+				zap.Error(err))
+			continue
+		}
+		s.publishMessageEvent(ctx, events.MessageUpdated, msg)
+
+		// Mirror UpdatePermissionMessage: clear the spinner on the related tool
+		// call so the UI reflects the expired state end-to-end.
+		if toolCallID, ok := msg.Metadata["tool_call_id"].(string); ok && toolCallID != "" {
+			if err := s.UpdateToolCallMessage(ctx, sessionID, toolCallID, "error", "", "", nil); err != nil {
+				s.logger.Warn("failed to cancel related tool call for expired permission",
+					zap.String("tool_call_id", toolCallID),
+					zap.String("session_id", sessionID),
+					zap.Error(err))
+			}
+		}
+		expired++
+	}
+
+	if expired > 0 {
+		s.logger.Info("expired stranded permission requests on turn complete",
+			zap.String("session_id", sessionID),
+			zap.Int("count", expired))
+	}
+	return expired, nil
+}
+
 // UpdateClarificationMessage updates a clarification request message's status and response.
 // It includes retry logic to handle race conditions.
 // The answers parameter should be a slice of answer objects with question_id, selected_options, and custom_text.

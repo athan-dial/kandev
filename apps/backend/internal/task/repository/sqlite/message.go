@@ -332,6 +332,31 @@ func (r *Repository) FindMessageByPendingID(ctx context.Context, pendingID strin
 	return message, nil
 }
 
+// ListPendingPermissionRequestsBySession returns all permission_request messages
+// for a session whose metadata.status is unset or not in a terminal state
+// (approved/rejected/expired). Used by the orchestrator's turn-complete sweep
+// to clean up permission requests stranded by an agent that emitted a late
+// session/request_permission after the turn already finished.
+func (r *Repository) ListPendingPermissionRequestsBySession(ctx context.Context, sessionID string) ([]*models.Message, error) {
+	drv := r.ro.DriverName()
+	statusExpr := dialect.JSONExtract(drv, "metadata", "status")
+	query := fmt.Sprintf(`
+		SELECT id, task_session_id, task_id, turn_id, author_type, author_id, content, requests_input, type, metadata, created_at
+		FROM task_session_messages
+		WHERE task_session_id = ?
+		  AND type = ?
+		  AND (%s IS NULL OR %s NOT IN ('approved', 'rejected', 'expired'))
+		ORDER BY created_at ASC
+	`, statusExpr, statusExpr)
+	rows, err := r.ro.QueryContext(ctx, r.ro.Rebind(query), sessionID, string(models.MessageTypePermissionRequest))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	result, _, err := scanMessageRows(rows, 0)
+	return result, err
+}
+
 // CompletePendingToolCallsForTurn marks all non-terminal tool call messages for a turn as "complete".
 // This is a safety net to ensure no tool calls remain stuck in a non-terminal state (pending,
 // running, in_progress, etc.) after a turn completes.
