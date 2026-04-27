@@ -47,6 +47,12 @@ const (
 // allow rather than a tight RPC deadline.
 const wakeupPromptTimeout = 30 * time.Minute
 
+// maxCompletedToolCalls bounds the FIFO of terminal-status tool call IDs
+// retained for late-permission detection. A typical turn produces dozens of
+// tool calls; 256 leaves headroom for very long turns without unbounded
+// growth across a long-running adapter.
+const maxCompletedToolCalls = 256
+
 // AgentInfo contains information about the connected agent.
 type AgentInfo struct {
 	Name    string `json:"name"`
@@ -103,6 +109,18 @@ type Adapter struct {
 	// Maps toolCallId -> NormalizedPayload so we can update with results
 	activeToolCalls map[string]*streams.NormalizedPayload
 
+	// completedToolCalls tracks tool call IDs that already reached a terminal
+	// status (complete/error/cancelled). When an agent emits a late
+	// session/request_permission for a tool that is already done — observed
+	// with OpenCode ACP after the agent's turn ends — handlePermissionRequest
+	// uses this set to auto-cancel the request instead of forwarding it,
+	// which would otherwise create a permission_request message that never
+	// resolves. Bounded with FIFO eviction; a single turn produces dozens of
+	// tool calls, not thousands, so the bound is comfortably above realistic
+	// per-turn volume.
+	completedToolCalls     map[string]struct{}
+	completedToolCallsFIFO []string
+
 	// Active Monitor tools, keyed by sessionID -> taskID -> toolCallID.
 	// Claude-acp's Monitor tool runs a background script that streams events
 	// back to the LLM as `<task-notification>` envelopes. We hold this map so
@@ -157,17 +175,18 @@ func NewAdapter(cfg *shared.Config, log *logger.Logger) *Adapter {
 	l := log.WithFields(zap.String("adapter", "acp"), zap.String("agent_id", cfg.AgentID))
 	ctx, cancel := context.WithCancel(context.Background())
 	a := &Adapter{
-		cfg:             cfg,
-		logger:          l,
-		agentID:         cfg.AgentID,
-		normalizer:      NewNormalizer(),
-		updatesCh:       make(chan AgentEvent, 100),
-		activeToolCalls: make(map[string]*streams.NormalizedPayload),
-		activeMonitors:  make(map[string]map[string]string),
-		pendingWakeups:  make(map[string]*pendingWakeup),
-		attachMgr:       shared.NewAttachmentManager(cfg.WorkDir, l.Zap()),
-		lifetimeCtx:     ctx,
-		lifetimeCancel:  cancel,
+		cfg:                cfg,
+		logger:             l,
+		agentID:            cfg.AgentID,
+		normalizer:         NewNormalizer(),
+		updatesCh:          make(chan AgentEvent, 100),
+		activeToolCalls:    make(map[string]*streams.NormalizedPayload),
+		completedToolCalls: make(map[string]struct{}),
+		activeMonitors:     make(map[string]map[string]string),
+		pendingWakeups:     make(map[string]*pendingWakeup),
+		attachMgr:          shared.NewAttachmentManager(cfg.WorkDir, l.Zap()),
+		lifetimeCtx:        ctx,
+		lifetimeCancel:     cancel,
 	}
 	a.wakeup = newWakeupScheduler(l, a.fireWakeup)
 	return a
@@ -830,6 +849,38 @@ func (a *Adapter) Cancel(ctx context.Context) error {
 	return err
 }
 
+// markToolCallCompletedLocked records that toolCallID has reached a terminal
+// status. Caller must hold a.mu for write. Used by handlePermissionRequest to
+// detect late session/request_permission notifications that arrive after the
+// tool finished and would otherwise create a stuck pending UI.
+func (a *Adapter) markToolCallCompletedLocked(toolCallID string) {
+	if toolCallID == "" {
+		return
+	}
+	if _, ok := a.completedToolCalls[toolCallID]; ok {
+		return
+	}
+	a.completedToolCalls[toolCallID] = struct{}{}
+	a.completedToolCallsFIFO = append(a.completedToolCallsFIFO, toolCallID)
+	if len(a.completedToolCallsFIFO) > maxCompletedToolCalls {
+		evict := a.completedToolCallsFIFO[0]
+		a.completedToolCallsFIFO = a.completedToolCallsFIFO[1:]
+		delete(a.completedToolCalls, evict)
+	}
+}
+
+// isToolCallCompleted reports whether toolCallID was previously marked as
+// having reached a terminal status. Acquires a.mu for read.
+func (a *Adapter) isToolCallCompleted(toolCallID string) bool {
+	if toolCallID == "" {
+		return false
+	}
+	a.mu.RLock()
+	_, ok := a.completedToolCalls[toolCallID]
+	a.mu.RUnlock()
+	return ok
+}
+
 // cancelActiveToolCalls emits cancelled tool_update events for all in-flight tool calls
 // and clears the activeToolCalls map.
 //
@@ -854,6 +905,9 @@ func (a *Adapter) cancelActiveToolCalls(sessionID string) {
 		}
 	}
 	a.activeToolCalls = preserved
+	for tcID := range toCancel {
+		a.markToolCallCompletedLocked(tcID)
+	}
 	a.mu.Unlock()
 
 	for toolCallID, normalized := range toCancel {
@@ -1700,6 +1754,7 @@ func (a *Adapter) convertToolCallResultUpdate(sessionID string, tcu *acp.Session
 
 	if isTerminal {
 		delete(a.activeToolCalls, toolCallID)
+		a.markToolCallCompletedLocked(toolCallID)
 		// Also drop tracked Monitor: this terminal update is the
 		// agent-emitted close, so the prompt-end sweep must not re-emit a
 		// "Monitor exited" event for this same toolCallID.
@@ -1800,6 +1855,20 @@ func (a *Adapter) handlePermissionRequest(ctx context.Context, req *PermissionRe
 	sessionID := req.SessionID
 	if sessionID == "" {
 		sessionID = fallbackSessionID
+	}
+
+	// Late permission for an already-finished tool. OpenCode (and possibly
+	// other agents) sometimes emit session/request_permission after the tool
+	// has already reported a terminal status — at that point the user has
+	// already seen the tool resolve and there's no UI affordance left to
+	// answer with. Auto-cancel so the agent's prompt() returns and we don't
+	// create a stuck pending_permission message.
+	if a.isToolCallCompleted(req.ToolCallID) {
+		a.logger.Warn("ignoring late permission request for already-completed tool call",
+			zap.String("session_id", sessionID),
+			zap.String("tool_call_id", req.ToolCallID),
+			zap.String("title", req.Title))
+		return &PermissionResponse{Cancelled: true}, nil
 	}
 
 	// Only emit a synthetic tool_call event if no ToolCall notification preceded this.
