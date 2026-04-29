@@ -476,61 +476,55 @@ function useTaskCreateDialogSetup(props: TaskCreateDialogProps) {
 }
 
 export function TaskCreateDialog(props: TaskCreateDialogProps) {
-  const { open, onOpenChange, initialValues, workspaceId } = props;
   const setup = useTaskCreateDialogSetup(props);
-  const {
-    fs, isSessionMode, isEditMode, isCreateMode, isTaskStarted,
-    sessionRepoName, workflows, agentProfiles, snapshots, repositoriesLoading,
-    branchesLoading, computed, handlers, handleKeyDown, handleJiraImport,
-  } = setup;
-  const {
-    handleSubmit, handleUpdateWithoutAgent, handleCreateWithoutAgent,
-    handleCreateWithPlanMode, handleCancel,
-  } = setup.submitHandlers;
+  const { fs, computed, handlers, submitHandlers } = setup;
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={props.open} onOpenChange={props.onOpenChange}>
       <DialogContent
         data-testid="create-task-dialog"
         className="w-full h-full max-w-full max-h-full rounded-none sm:w-[900px] sm:h-auto sm:max-w-none sm:max-h-[85vh] sm:rounded-lg flex flex-col"
       >
         <DialogHeader>
           <RenderHeader
-            initialTitle={initialValues?.title}
-            workspaceId={workspaceId}
-            isCreateMode={isCreateMode}
-            isEditMode={isEditMode}
-            isTaskStarted={isTaskStarted}
-            sessionRepoName={sessionRepoName}
+            initialTitle={props.initialValues?.title}
+            workspaceId={props.workspaceId}
+            isCreateMode={setup.isCreateMode}
+            isEditMode={setup.isEditMode}
+            isTaskStarted={setup.isTaskStarted}
+            sessionRepoName={setup.sessionRepoName}
             fs={fs}
-            repositoriesLoading={repositoriesLoading}
+            repositoriesLoading={setup.repositoriesLoading}
             computed={computed}
             handlers={handlers}
             repositoryLocked={!!props.lockedFields?.repository}
           />
         </DialogHeader>
-        <form onSubmit={handleSubmit} className="flex flex-col gap-4 overflow-hidden">
+        <form
+          onSubmit={submitHandlers.handleSubmit}
+          className="flex flex-col gap-4 overflow-hidden"
+        >
           <DialogFormBody
-            isSessionMode={isSessionMode}
-            isCreateMode={isCreateMode}
-            isTaskStarted={isTaskStarted}
+            isSessionMode={setup.isSessionMode}
+            isCreateMode={setup.isCreateMode}
+            isTaskStarted={setup.isTaskStarted}
             isPassthroughProfile={computed.isPassthroughProfile}
             initialDescription={fs.currentDefaults.description}
             hasDescription={fs.hasDescription}
-            workspaceId={workspaceId}
-            onJiraImport={handleJiraImport}
+            workspaceId={props.workspaceId}
+            onJiraImport={setup.handleJiraImport}
             branchOptions={computed.branchOptions}
-            branchesLoading={branchesLoading || (fs.useGitHubUrl && fs.githubBranchesLoading)}
+            branchesLoading={setup.branchesLoading || (fs.useGitHubUrl && fs.githubBranchesLoading)}
             agentProfileOptions={computed.agentProfileOptions}
             executorProfileOptions={computed.executorProfileOptions}
-            agentProfiles={agentProfiles}
+            agentProfiles={setup.agentProfiles}
             agentProfilesLoading={computed.agentProfilesLoading}
             executorsLoading={computed.executorsLoading}
             isCreatingSession={fs.isCreatingSession}
-            workflows={workflows}
-            snapshots={snapshots}
+            workflows={setup.workflows}
+            snapshots={setup.snapshots}
             effectiveWorkflowId={computed.effectiveWorkflowId ?? null}
             fs={fs}
-            handleKeyDown={handleKeyDown}
+            handleKeyDown={setup.handleKeyDown}
             onBranchChange={handlers.handleBranchChange}
             onAgentProfileChange={handlers.handleAgentProfileChange}
             onExecutorProfileChange={handlers.handleExecutorProfileChange}
@@ -548,10 +542,10 @@ export function TaskCreateDialog(props: TaskCreateDialogProps) {
           />
           <DialogFooter className="border-t border-border pt-3 flex-col gap-3 sm:flex-row sm:gap-2">
             <TaskCreateDialogFooter
-              isSessionMode={isSessionMode}
-              isCreateMode={isCreateMode}
-              isEditMode={isEditMode}
-              isTaskStarted={isTaskStarted}
+              isSessionMode={setup.isSessionMode}
+              isCreateMode={setup.isCreateMode}
+              isEditMode={setup.isEditMode}
+              isTaskStarted={setup.isTaskStarted}
               isPassthroughProfile={computed.isPassthroughProfile}
               isCreatingSession={fs.isCreatingSession}
               isCreatingTask={fs.isCreatingTask}
@@ -560,17 +554,17 @@ export function TaskCreateDialog(props: TaskCreateDialogProps) {
               hasRepositorySelection={computed.hasRepositorySelection}
               branch={fs.branch}
               agentProfileId={computed.effectiveAgentProfileId}
-              workspaceId={workspaceId}
+              workspaceId={props.workspaceId}
               effectiveWorkflowId={computed.effectiveWorkflowId ?? null}
               executorHint={computed.executorHint}
-              onCancel={handleCancel}
-              onUpdateWithoutAgent={handleUpdateWithoutAgent}
-              onCreateWithoutAgent={handleCreateWithoutAgent}
-              onCreateWithPlanMode={handleCreateWithPlanMode}
+              onCancel={submitHandlers.handleCancel}
+              onUpdateWithoutAgent={submitHandlers.handleUpdateWithoutAgent}
+              onCreateWithoutAgent={submitHandlers.handleCreateWithoutAgent}
+              onCreateWithPlanMode={submitHandlers.handleCreateWithPlanMode}
             />
           </DialogFooter>
         </form>
-        <PendingDiscardModal pending={setup.submitHandlers.pendingDiscard} />
+        <PendingDiscardModal pending={submitHandlers.pendingDiscard} />
       </DialogContent>
     </Dialog>
   );
